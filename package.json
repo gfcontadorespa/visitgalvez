@@ -1,0 +1,28 @@
+{
+  "name": "registro-visitas-ph",
+  "version": "1.0.0",
+  "description": "Bot de Telegram para registrar visitas de una propiedad horizontal (T100/T200), con Supabase y QR deep-link.",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@grammyjs/conversations": "^1.2.0",
+    "@supabase/supabase-js": "^2.45.4",
+    "dotenv": "^16.4.5",
+    "grammy": "^1.30.0",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.12",
+    "@types/qrcode": "^1.5.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4"
+  }
+}
