@@ -145,15 +145,18 @@ export async function createVisit(input: {
 }
 
 export async function markVisitArrived(code: string): Promise<boolean> {
-  const { error } = await supabase
+  // Solo confirma visitas en estado 'registered' (evita re-confirmar o revivir una 'left')
+  const { data, error } = await supabase
     .from('visits')
     .update({ status: 'arrived', confirmed_at: new Date().toISOString(), arrived_at: new Date().toISOString() })
-    .eq('confirm_code', code);
+    .eq('confirm_code', code)
+    .eq('status', 'registered')
+    .select('id');
   if (error) {
     console.error('markVisitArrived error:', error.message);
     return false;
   }
-  return true;
+  return (data?.length ?? 0) > 0;
 }
 
 export async function markVisitLeft(id: number): Promise<boolean> {

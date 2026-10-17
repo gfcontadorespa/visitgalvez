@@ -11,7 +11,7 @@ import { registerOnboardingConversation } from './handlers/onboarding';
 import { registerVisitConversation } from './handlers/visit';
 import { registerArrival, registerDeparture } from './handlers/security';
 import { showMainMenu } from './handlers/menu';
-import { markVisitArrived } from './db';
+import { markVisitArrived, getUserByTelegram } from './db';
 
 // ---------- Tipos de contexto ----------
 interface SessionData {
@@ -41,19 +41,61 @@ bot.command('cancel', async (ctx) => {
   await showMainMenu(ctx);
 });
 
+// ---------- Comandos principales (ANTES de las conversaciones) ----------
+// ⚠️ Un comando registrado DESPUÉS de las conversaciones se "come" el update
+//    cuando hay una conversación activa — por eso /start y /menu viven acá.
+bot.command('start', async (ctx) => {
+  try {
+    await ctx.conversation.exit();
+  } catch {}
+  const payload: string | undefined = (ctx as any).match ?? ctx.msg?.text?.split(' ')[1] ?? '';
+  if (payload && payload.startsWith('visita_')) {
+    const code = payload.slice('visita_'.length);
+    await registerArrival(ctx, code);
+    return;
+  }
+  // 🆕 Si el usuario NO está registrado → arranca el ONBOARDING
+  //    (antes quedaba huérfano: /start solo mostraba el menú y nadie podía registrarse)
+  const from = ctx.from;
+  const existing = from ? await getUserByTelegram(from.id) : null;
+  if (!existing) {
+    await ctx.conversation.enter('onboarding');
+    return;
+  }
+  await showMainMenu(ctx);
+});
+
+bot.command('menu', async (ctx) => {
+  try {
+    await ctx.conversation.exit();
+  } catch {}
+  await showMainMenu(ctx);
+});
+
 // ---------- Callbacks de botones ----------
+// ⚠️ Siempre cerramos conversaciones activas antes de actuar: si no, se
+// arrancaría una conversación PARALELA y los flujos se mezclarían.
 bot.callbackQuery('menu', async (ctx) => {
   await ctx.answerCallbackQuery();
+  try {
+    await ctx.conversation.exit();
+  } catch {}
   await showMainMenu(ctx);
 });
 
 bot.callbackQuery('visit', async (ctx) => {
   await ctx.answerCallbackQuery();
+  try {
+    await ctx.conversation.exit();
+  } catch {}
   await ctx.conversation.enter('registerVisit');
 });
 
 bot.callbackQuery('departure', async (ctx) => {
   await ctx.answerCallbackQuery();
+  try {
+    await ctx.conversation.exit();
+  } catch {}
   await ctx.conversation.enter('registerDeparture');
 });
 
@@ -67,11 +109,13 @@ bot.on('callback_query:data', async (ctx) => {
       text: ok ? '✅ Llegada confirmada' : '⚠️ No se pudo confirmar',
       show_alert: true,
     });
-    await ctx.editMessageText(
-      ok
-        ? '✅ Llegada confirmada y registrada.'
-        : '⚠️ No se pudo confirmar la llegada. Verifica el código.'
-    );
+    try {
+      await ctx.editMessageText(
+        ok
+          ? '✅ Llegada confirmada y registrada.'
+          : '⚠️ No se pudo confirmar (puede que ya estuviera confirmada o la visita cambió de estado).'
+      );
+    } catch {}
     return;
   }
   await ctx.answerCallbackQuery();
@@ -94,21 +138,7 @@ bot.use(
   })
 );
 
-// ---------- Comandos ----------
-bot.command('start', async (ctx) => {
-  const payload: string | undefined = (ctx as any).match ?? ctx.msg?.text?.split(' ')[1] ?? '';
-  if (payload && payload.startsWith('visita_')) {
-    const code = payload.slice('visita_'.length);
-    await registerArrival(ctx, code);
-    return;
-  }
-  await showMainMenu(ctx);
-});
-
-bot.command('menu', async (ctx) => {
-  await showMainMenu(ctx);
-});
-
+// ---------- Comandos (los principales ya están arriba, antes de las conversaciones) ----------
 bot.on('message', async (ctx) => {
   await showMainMenu(ctx);
 });
