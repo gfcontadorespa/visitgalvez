@@ -1,15 +1,21 @@
 import { InputFile } from 'grammy';
+import { randomBytes } from 'node:crypto';
 import { botUsername } from '../bot-info';
 import { generateQrDeepLink, qrPngBuffer } from '../qr';
 import {
   getUserByTelegram,
   getUserUnits,
+  getVisitByConfirmCode,
   createVisit,
+  listTowers,
+  listUnitsByTower,
 } from '../db';
 import type { MyConversation, MyContext } from '../index';
+import type { Unit, Visit } from '../types';
 
+// Código interno criptográficamente seguro (8 caracteres hex)
 function randomCode(): string {
-  return Math.random().toString(36).slice(2, 10).toUpperCase();
+  return randomBytes(4).toString('hex').toUpperCase();
 }
 
 // Registra una visita guiada (propietario o guardia).
@@ -30,33 +36,73 @@ export async function registerVisitConversation(
     return;
   }
 
-  // Elegir unidad del usuario (si tiene varias).
-  const units = await conversation.external(async () =>
-    getUserUnits(user.id)
-  );
-  if (units.length === 0) {
-    await ctx.reply(
-      '⚠️ No tienes una unidad asignada. Regístrate con /start.'
-    );
-    return;
-  }
+  // Elegir la unidad de la visita.
+  // 🛡️ GUARDIA: no tiene unidad propia → elige torre + unidad de la PH.
+  // 🏠 PROPIETARIO: sus unidades (si tiene varias, elige).
+  let ownerUnit: Unit | null = null;
+  const units = await conversation.external(async () => getUserUnits(user.id));
 
-  let ownerUnit = units[0];
-  if (units.length > 1) {
+  if (user.role === 'guard') {
+    const towers = await conversation.external(async () => listTowers());
+    if (towers.length === 0) {
+      await ctx.reply('No hay torres configuradas. Ejecuta el seed de unidades.');
+      return;
+    }
+    await ctx.reply(`¿Torre de la visita? ${towers.join(' o ')}:`);
+    let towerText = '';
+    for (let i = 0; i < 5; i++) {
+      const tor = await conversation.waitFor('message:text');
+      let cand = (tor.message.text ?? '').trim().toUpperCase();
+      if (!cand.startsWith('T')) cand = 'T' + cand;
+      if (towers.includes(cand as 'T100' | 'T200')) {
+        towerText = cand;
+        break;
+      }
+      if (i === 4) {
+        await ctx.reply('Torre no válida. Cancela con /cancel e intenta de nuevo.');
+        return;
+      }
+    }
+    const towerUnits = await conversation.external(async () => listUnitsByTower(towerText));
     await ctx.reply(
-      '¿A qué unidad pertenece la visita? Escribe el número, ej: 4A'
+      `Apartamentos en ${towerText}: ${towerUnits.map((u) => u.unit).join(', ')}\n\n` +
+        'Escribe la unidad de la visita (ej: 4A):'
     );
-    let chosen: typeof ownerUnit | null = null;
-    for (let i = 0; i < 5 && !chosen; i++) {
+    for (let i = 0; i < 5 && !ownerUnit; i++) {
       const res = await conversation.waitFor('message:text');
       const cand = (res.message.text ?? '').trim().toUpperCase();
-      chosen = units.find((u) => u.unit.toUpperCase() === cand) || null;
-      if (!chosen && i === 4) {
+      const match = towerUnits.find((u) => u.unit.toUpperCase() === cand);
+      if (match) ownerUnit = match;
+      else if (i === 4) {
         await ctx.reply('Unidad no reconocida. Cancela con /cancel e intenta de nuevo.');
         return;
       }
     }
-    ownerUnit = chosen as typeof ownerUnit;
+  } else {
+    if (units.length === 0) {
+      await ctx.reply('⚠️ No tienes una unidad asignada. Regístrate con /start.');
+      return;
+    }
+    ownerUnit = units[0];
+    if (units.length > 1) {
+      await ctx.reply('¿A qué unidad pertenece la visita? Escribe el número, ej: 4A');
+      let chosen: Unit | null = null;
+      for (let i = 0; i < 5 && !chosen; i++) {
+        const res = await conversation.waitFor('message:text');
+        const cand = (res.message.text ?? '').trim().toUpperCase();
+        chosen = units.find((u) => u.unit.toUpperCase() === cand) || null;
+        if (!chosen && i === 4) {
+          await ctx.reply('Unidad no reconocida. Cancela con /cancel e intenta de nuevo.');
+          return;
+        }
+      }
+      ownerUnit = chosen;
+    }
+  }
+
+  if (!ownerUnit) {
+    await ctx.reply('No se pudo determinar la unidad. Usa /cancel y vuelve a empezar.');
+    return;
   }
 
   // ¿A pie o en auto?
@@ -86,8 +132,7 @@ export async function registerVisitConversation(
     plate = (plateRes.message.text ?? '').trim();
   }
 
-  // Confirmar resumen.
-  const confirmCode = randomCode();
+  // Confirmar resumen (el código seguro se genera al guardar).
   const summary =
     `📋 Resumen de la visita\n\n` +
     `🏠 Unidad: ${ownerUnit.tower} ${ownerUnit.unit}\n` +
@@ -114,21 +159,30 @@ export async function registerVisitConversation(
     return;
   }
 
-  // Guardar en base de datos.
-  const visit = await conversation.external(async () =>
-    createVisit({
-      confirm_code: confirmCode,
-      unit_id: ownerUnit.id,
-      owner_user_id: user.id,
-      visitor_name: visitorName,
-      visit_type: visitType as 'walk' | 'car',
-      plate,
-      registered_by_user_id: user.id,
-    })
-  );
+  // Guardar en base de datos — código SEGURO y con reintento si choca (unique)
+  let visit: Visit | null = null;
+  let confirmCode = '';
+  for (let attempt = 0; attempt < 5 && !visit; attempt++) {
+    confirmCode = randomCode();
+    const yaExiste = await conversation.external(async () =>
+      getVisitByConfirmCode(confirmCode)
+    );
+    if (yaExiste) continue;
+    visit = await conversation.external(async () =>
+      createVisit({
+        confirm_code: confirmCode,
+        unit_id: ownerUnit!.id,
+        owner_user_id: user.id,
+        visitor_name: visitorName,
+        visit_type: visitType as 'walk' | 'car',
+        plate,
+        registered_by_user_id: user.id,
+      })
+    );
+  }
 
   if (!visit) {
-    await ctx.reply('⚠️ Ocurrió un error guardando la visita.');
+    await ctx.reply('⚠️ Ocurrió un error guardando la visita. Inténtalo de nuevo.');
     return;
   }
 

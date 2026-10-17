@@ -30,6 +30,17 @@ bot.use(
 );
 bot.use(conversations());
 
+// 🚪 /cancel — va REGISTRADO ANTES de las conversaciones: si no, la conversación
+//    activa se "come" el update y el comando nunca corre.
+//    exit() SIN id = mata TODAS las conversaciones activas de este chat.
+bot.command('cancel', async (ctx) => {
+  try {
+    await ctx.conversation.exit();
+  } catch {}
+  await ctx.reply('✅ Listo — cancelado. Usa /menu para empezar de nuevo.');
+  await showMainMenu(ctx);
+});
+
 // ---------- Callbacks de botones ----------
 bot.callbackQuery('menu', async (ctx) => {
   await ctx.answerCallbackQuery();
